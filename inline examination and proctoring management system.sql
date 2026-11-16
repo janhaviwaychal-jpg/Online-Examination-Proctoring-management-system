@@ -145,6 +145,84 @@ JOIN Exam_Attempts a ON r.attempt_id = a.attempt_id
 JOIN Users u ON a.student_id = u.user_id
 JOIN Exams e ON a.exam_id = e.exam_id
 ORDER BY r.result_id DESC;
+USE online_examination;
+DESCRIBE Student_Answers;
+SELECT * FROM Student_Answers
+ORDER BY answer_id DESC;
+SELECT * FROM Results
+ORDER BY result_id DESC;
+SELECT * FROM Exam_Attempts
+ORDER BY attempt_id DESC;
+SHOW DATABASES;
+USE online_examination;
+SHOW TABLES;
+USE online_examination;
+DESCRIBE Questions;
+USE online_examination;
 
+DESCRIBE Results;
+SHOW CREATE TABLE Results;
+SHOW TABLES;
+DESCRIBE exam_attempts;
+SELECT * FROM Results;
+DESCRIBE student_answers;
+DESCRIBE questions;
+DESCRIBE users;
+SELECT user_id, full_name, role
+FROM users
+WHERE role = 'STUDENT';
+USE online_examination;
 
+SELECT user_id, full_name, email, role, status
+FROM users;
+SELECT user_id, email, password_hash
+FROM users
+WHERE user_id = 4;
+USE online_examination;
 
+UPDATE users
+SET password_hash = 'PASTE_YOUR_GENERATED_HASH_HERE'
+WHERE user_id = 4;
+SELECT user_id, email
+FROM users
+WHERE user_id = 4;
+USE online_examination;
+
+UPDATE users
+SET password_hash = 'PASTE_GENERATED_HASH_HERE'
+WHERE user_id = 4;
+SELECT
+    LENGTH(password_hash) AS hash_length,
+    LOCATE(':', password_hash) AS colon_position
+FROM users
+WHERE user_id = 4;
+USE online_examination;
+
+UPDATE users
+SET password_hash = 'PASTE_YOUR_NEW_COMPLETE_HASH_HERE'
+WHERE user_id = 4;
+SELECT
+    LENGTH(password_hash) AS hash_length,
+    LOCATE(':', password_hash) AS colon_position
+FROM users
+WHERE user_id = 4;
+SELECT password_hash
+FROM users
+WHERE user_id = 4;
+UPDATE users
+SET password_hash = "pF7JS+uD98L/ZECcg/HBog==:xVlKtTHjyti2OG+2H2m/k3nTcwHMGN27Ewbs9+wAXAU="
+WHERE user_id = 4;
+SELECT LENGTH(password_hash), LOCATE(':', password_hash)
+FROM users
+WHERE user_id = 4;
+
+USE online_examination;
+
+DESCRIBE exam_attempts;
+
+DESCRIBE student_answers;
+
+DESCRIBE results;
+
+DESCRIBE questions;
+DESCRIBE exam_attempts;

@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   LayoutDashboard, BookOpen, ClipboardList, User,
   Settings, LogOut, Bell, Clock, Award, FileText,
@@ -32,7 +32,9 @@ function App() {
   const [answers, setAnswers] = useState({});
   const [questionLoading, setQuestionLoading] = useState(false);
   const [questionError, setQuestionError] = useState("");
+
   const [submitted, setSubmitted] = useState(false);
+  const [examEnded, setExamEnded] = useState(false);
 
   const [submissionResult, setSubmissionResult] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -41,7 +43,18 @@ function App() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [darkMode, setDarkMode] = useState(false);
 
-  // Login function
+  const submissionLock = useRef(false);
+  const fullscreenStarted = useRef(false);
+  const examEndedRef = useRef(false);
+
+  const menuItems = [
+    { name: "Dashboard", icon: LayoutDashboard },
+    { name: "Available Exams", icon: BookOpen },
+    { name: "My Results", icon: ClipboardList },
+    { name: "My Profile", icon: User }
+  ];
+
+  // Login
   const handleLogin = async (e) => {
     e.preventDefault();
 
@@ -86,8 +99,16 @@ function App() {
     }
   };
 
-  // Logout function
+  // Logout
   const handleLogout = () => {
+    examEndedRef.current = true;
+    fullscreenStarted.current = false;
+    submissionLock.current = false;
+
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+
     localStorage.removeItem("studentId");
 
     setStudentId(null);
@@ -102,16 +123,18 @@ function App() {
     setAnswers({});
     setCurrentQuestion(0);
     setSubmitted(false);
+    setExamEnded(false);
     setSubmissionResult(null);
     setSubmissionError("");
     setSubmitting(false);
+    setQuestionLoading(false);
 
     setResults([]);
     setResultsError("");
     setQuestionError("");
   };
 
-  // Fetch available exams
+  // Fetch exams
   useEffect(() => {
     fetch("http://localhost:8080/api/exams")
       .then((response) => {
@@ -130,7 +153,7 @@ function App() {
       });
   }, []);
 
-  // Fetch results of logged-in student
+  // Fetch student results
   useEffect(() => {
     if (!studentId) return;
 
@@ -173,64 +196,47 @@ function App() {
     };
   }, [activePage, studentId]);
 
-  const menuItems = [
-    { name: "Dashboard", icon: LayoutDashboard },
-    { name: "Available Exams", icon: BookOpen },
-    { name: "My Results", icon: ClipboardList },
-    { name: "My Profile", icon: User }
-  ];
-
-  // Start examination
-  const startExam = async (exam) => {
-    setQuestionLoading(true);
-    setQuestionError("");
-    setSubmissionError("");
-    setSubmissionResult(null);
-
-    setActiveExam(exam);
-    setQuestions([]);
-    setAnswers({});
-    setCurrentQuestion(0);
-    setSubmitted(false);
-
+  // Enter fullscreen
+  const enterFullscreen = async () => {
     try {
-      const response = await fetch(
-        `http://localhost:8080/api/exams/${exam.exam_id}/questions`
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      }
+
+      fullscreenStarted.current = Boolean(
+        document.fullscreenElement
       );
 
-      if (!response.ok) {
-        throw new Error("Unable to load exam questions");
-      }
-
-      const data = await response.json();
-
-      if (data.length === 0) {
-        throw new Error("No questions found for this exam");
-      }
-
-      setQuestions(data);
+      return fullscreenStarted.current;
 
     } catch (error) {
-      setQuestionError(error.message);
-    } finally {
-      setQuestionLoading(false);
+      fullscreenStarted.current = false;
+      console.log("Unable to enter fullscreen");
+      return false;
     }
   };
 
-  // Select answer
-  const selectAnswer = (option) => {
-    setAnswers((previousAnswers) => ({
-      ...previousAnswers,
-      [questions[currentQuestion].question_id]: option
-    }));
-  };
+  // Submit examination
+  const finishExam = useCallback(async () => {
+    if (
+      submissionLock.current ||
+      examEndedRef.current ||
+      !activeExam
+    ) {
+      return;
+    }
 
-  // Submit examination and save result
-  const finishExam = async () => {
-    if (submitting || submitted) return;
+    // Lock submission immediately
+    submissionLock.current = true;
+    examEndedRef.current = true;
 
+    // Immediately close the question screen
+    setExamEnded(true);
     setSubmitting(true);
     setSubmissionError("");
+
+    // Stop fullscreen monitoring
+    fullscreenStarted.current = false;
 
     try {
       const response = await fetch(
@@ -258,29 +264,151 @@ function App() {
       setSubmissionResult(data);
       setSubmitted(true);
 
+      if (document.fullscreenElement) {
+        await document.exitFullscreen().catch(() => {});
+      }
+
     } catch (error) {
       setSubmissionError(error.message);
+
+      // Keep exam ended, but allow retry
+      submissionLock.current = false;
+
     } finally {
       setSubmitting(false);
     }
+  }, [activeExam, studentId, answers]);
+
+  // Detect fullscreen exit
+  useEffect(() => {
+    if (
+      !activeExam ||
+      examEnded ||
+      questionLoading ||
+      questions.length === 0
+    ) {
+      return;
+    }
+
+    const handleFullscreenChange = () => {
+      if (
+        !document.fullscreenElement &&
+        fullscreenStarted.current &&
+        !examEndedRef.current &&
+        !submissionLock.current
+      ) {
+        fullscreenStarted.current = false;
+        finishExam();
+      }
+    };
+
+    document.addEventListener(
+      "fullscreenchange",
+      handleFullscreenChange
+    );
+
+    return () => {
+      document.removeEventListener(
+        "fullscreenchange",
+        handleFullscreenChange
+      );
+    };
+  }, [
+    activeExam,
+    examEnded,
+    questionLoading,
+    questions.length,
+    finishExam
+  ]);
+
+  // Start examination
+  const startExam = async (exam) => {
+    submissionLock.current = false;
+    examEndedRef.current = false;
+    fullscreenStarted.current = false;
+
+    setExamEnded(false);
+    setSubmitted(false);
+    setSubmitting(false);
+
+    setSubmissionResult(null);
+    setSubmissionError("");
+    setQuestionError("");
+
+    setQuestionLoading(true);
+
+    setActiveExam(exam);
+    setQuestions([]);
+    setAnswers({});
+    setCurrentQuestion(0);
+
+    // Fullscreen request must happen from the user's click
+    await enterFullscreen();
+
+    try {
+      const response = await fetch(
+        `http://localhost:8080/api/exams/${exam.exam_id}/questions`
+      );
+
+      if (!response.ok) {
+        throw new Error("Unable to load exam questions");
+      }
+
+      const data = await response.json();
+
+      if (!data || data.length === 0) {
+        throw new Error("No questions found for this exam");
+      }
+
+      setQuestions(data);
+
+    } catch (error) {
+      setQuestionError(error.message);
+
+    } finally {
+      setQuestionLoading(false);
+    }
   };
 
-  // Return to dashboard
+  // Select answer
+  const selectAnswer = (option) => {
+    if (examEndedRef.current || submissionLock.current) return;
+
+    setAnswers((previousAnswers) => ({
+      ...previousAnswers,
+      [questions[currentQuestion].question_id]: option
+    }));
+  };
+
+  // Back to dashboard
   const backToDashboard = () => {
+    examEndedRef.current = true;
+    fullscreenStarted.current = false;
+    submissionLock.current = false;
+
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+
     setActiveExam(null);
     setQuestions([]);
     setAnswers({});
     setCurrentQuestion(0);
+
     setSubmitted(false);
+    setExamEnded(false);
     setSubmissionResult(null);
     setSubmissionError("");
     setSubmitting(false);
+    setQuestionLoading(false);
+    setQuestionError("");
+
     setActivePage("Dashboard");
   };
 
   const optionLabels = ["A", "B", "C", "D"];
 
-  // Display examination cards
+  // Exam cards
   const renderExamCards = () => (
     <div className="exam-grid">
       {loading && <p>Loading exams...</p>}
@@ -331,10 +459,9 @@ function App() {
     </div>
   );
 
-  // Display pages
+  // Render pages
   const renderPage = () => {
 
-    // Dashboard
     if (activePage === "Dashboard") {
       return (
         <>
@@ -469,7 +596,6 @@ function App() {
       );
     }
 
-    // Available Exams
     if (activePage === "Available Exams") {
       return (
         <section className="section">
@@ -485,7 +611,6 @@ function App() {
       );
     }
 
-    // My Results
     if (activePage === "My Results") {
       return (
         <section className="section">
@@ -540,7 +665,6 @@ function App() {
       );
     }
 
-    // My Profile
     if (activePage === "My Profile") {
       return (
         <section className="section">
@@ -558,7 +682,6 @@ function App() {
       );
     }
 
-    // Settings
     if (activePage === "Settings") {
       return (
         <section className="section">
@@ -704,6 +827,30 @@ function App() {
     );
   }
 
+  const examScreenVisible =
+    activeExam &&
+    !examEnded &&
+    !submitted &&
+    !submitting;
+
+  const resultScreenVisible =
+    activeExam &&
+    examEnded &&
+    submitted &&
+    !submitting;
+
+  const submissionScreenVisible =
+    activeExam &&
+    examEnded &&
+    submitting;
+
+  const submissionErrorVisible =
+    activeExam &&
+    examEnded &&
+    !submitting &&
+    !submitted &&
+    Boolean(submissionError);
+
   return (
     <div className="app">
 
@@ -786,7 +933,9 @@ function App() {
         <header className="topbar">
           <div>
             <h3>
-              {activeExam ? activeExam.exam_title : activePage}
+              {activeExam
+                ? activeExam.exam_title
+                : activePage}
             </h3>
             <p>Online Examination Portal</p>
           </div>
@@ -800,22 +949,21 @@ function App() {
           </div>
         </header>
 
+        {/* Exam area */}
         {activeExam ? (
           <section className="section">
 
-            {!submitted && (
-              <button
-                className="view-button"
-                onClick={backToDashboard}
-              >
-                <ArrowLeft size={16} /> Exit Exam
-              </button>
+            {/* Loading questions */}
+            {questionLoading && !examEnded && (
+              <div className="exam-card">
+                <h2>Preparing Your Examination...</h2>
+                <p>Loading questions. Please wait.</p>
+              </div>
             )}
 
-            {questionLoading && <p>Loading questions...</p>}
-
-            {questionError && (
-              <div>
+            {/* Question loading error */}
+            {questionError && !examEnded && (
+              <div className="exam-card">
                 <p>{questionError}</p>
 
                 <button
@@ -827,152 +975,211 @@ function App() {
               </div>
             )}
 
-            {!questionLoading &&
+            {/* Active examination screen */}
+            {examScreenVisible &&
+              !questionLoading &&
               !questionError &&
-              submitted && (
-                <div className="exam-card">
-                  <h2>🎉 Exam Submitted Successfully!</h2>
-
-                  <p>
-                    Your answers have been saved in the database.
-                  </p>
-
-                  <div style={{ margin: "25px 0" }}>
-                    <h3>Your Result</h3>
-
-                    <h1 style={{ fontSize: "40px" }}>
-                      {submissionResult?.marksObtained} / {submissionResult?.totalMarks}
-                    </h1>
-
-                    <p>
-                      Percentage: {
-                        Number(submissionResult?.totalMarks) > 0
-                          ? (
-                              Number(submissionResult.marksObtained) /
-                              Number(submissionResult.totalMarks) * 100
-                            ).toFixed(2)
-                          : "0.00"
-                      }%
-                    </p>
-
-                    <p>
-                      Attempt ID: {submissionResult?.attemptId}
-                    </p>
-                  </div>
-
-                  <button
-                    className="start-button"
-                    onClick={backToDashboard}
-                  >
-                    Back to Dashboard
-                  </button>
-                </div>
-              )}
-
-            {!questionLoading &&
-              !questionError &&
-              !submitted &&
               questions.length > 0 && (
-                <div className="exam-card">
+                <>
+                  <button
+                    className="view-button"
+                    onClick={finishExam}
+                    disabled={submitting}
+                  >
+                    <ArrowLeft size={16} />
+                    Submit & Exit Exam
+                  </button>
 
-                  <div className="section-heading">
-                    <div>
-                      <h2>{activeExam.exam_title}</h2>
+                  <div className="exam-card">
+
+                    <div style={{
+                      background: "#e8f5e9",
+                      color: "#2e7d32",
+                      padding: "12px",
+                      borderRadius: "8px",
+                      marginBottom: "20px"
+                    }}>
+                      <strong>Fullscreen Proctoring Active</strong>
                       <p>
-                        Question {currentQuestion + 1} of {questions.length}
+                        Your examination is being conducted in fullscreen mode.
+                        Exiting fullscreen will automatically submit your exam.
                       </p>
                     </div>
 
-                    <span className="available">
-                      {activeExam.duration_minutes} Minutes
-                    </span>
-                  </div>
+                    <div className="section-heading">
+                      <div>
+                        <h2>{activeExam.exam_title}</h2>
+                        <p>
+                          Question {currentQuestion + 1} of {questions.length}
+                        </p>
+                      </div>
 
-                  <div className="question-count">
-                    Progress: {Object.keys(answers).length} of
-                    {questions.length} answered
-                  </div>
+                      <span className="available">
+                        {activeExam.duration_minutes} Minutes
+                      </span>
+                    </div>
 
-                  <h3>
-                    {questions[currentQuestion].question_text}
-                  </h3>
+                    <div className="question-count">
+                      Progress: {Object.keys(answers).length} of{" "}
+                      {questions.length} answered
+                    </div>
+
+                    <h3>
+                      {questions[currentQuestion].question_text}
+                    </h3>
+
+                    <p>
+                      Marks: {questions[currentQuestion].marks}
+                    </p>
+
+                    <div className="exam-options">
+                      {optionLabels.map((option) => {
+                        const optionKey =
+                          `option_${option.toLowerCase()}`;
+
+                        return (
+                          <label
+                            key={option}
+                            className="exam-option"
+                          >
+                            <input
+                              type="radio"
+                              name={`question-${questions[currentQuestion].question_id}`}
+                              value={option}
+                              checked={
+                                answers[
+                                  questions[currentQuestion].question_id
+                                ] === option
+                              }
+                              onChange={() => selectAnswer(option)}
+                            />
+
+                            <strong>{option}.</strong>
+
+                            {questions[currentQuestion][optionKey]}
+                          </label>
+                        );
+                      })}
+                    </div>
+
+                    <div className="exam-navigation">
+                      <button
+                        className="view-button"
+                        disabled={currentQuestion === 0}
+                        onClick={() =>
+                          setCurrentQuestion(currentQuestion - 1)
+                        }
+                      >
+                        Previous
+                      </button>
+
+                      {currentQuestion < questions.length - 1 ? (
+                        <button
+                          className="start-button"
+                          onClick={() =>
+                            setCurrentQuestion(currentQuestion + 1)
+                          }
+                        >
+                          Next Question <ArrowRight size={16} />
+                        </button>
+                      ) : (
+                        <button
+                          className="start-button"
+                          onClick={finishExam}
+                        >
+                          Submit Exam
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+
+            {/* Submission in progress: no questions displayed */}
+            {submissionScreenVisible && (
+              <div className="exam-card">
+                <h2>Submitting Your Examination...</h2>
+                <p>
+                  Your examination has ended. Please wait while
+                  your answers are saved in the database.
+                </p>
+              </div>
+            )}
+
+            {/* Submission failed: exam remains ended */}
+            {submissionErrorVisible && (
+              <div className="exam-card">
+                <h2>Examination Ended</h2>
+
+                <p style={{ color: "red" }}>
+                  Submission failed: {submissionError}
+                </p>
+
+                <p>
+                  Your question screen is closed. Try submitting
+                  your saved answers again.
+                </p>
+
+                <button
+                  className="start-button"
+                  onClick={finishExam}
+                  disabled={submitting}
+                >
+                  Retry Submission
+                </button>
+
+                <button
+                  className="view-button"
+                  onClick={backToDashboard}
+                  style={{ marginLeft: "10px" }}
+                >
+                  Back to Dashboard
+                </button>
+              </div>
+            )}
+
+            {/* Successful result */}
+            {resultScreenVisible && (
+              <div className="exam-card">
+                <h2>🎉 Exam Submitted Successfully!</h2>
+
+                <p>
+                  Your examination has ended and your answers
+                  have been saved in the database.
+                </p>
+
+                <div style={{ margin: "25px 0" }}>
+                  <h3>Your Result</h3>
+
+                  <h1 style={{ fontSize: "40px" }}>
+                    {submissionResult?.marksObtained} /{" "}
+                    {submissionResult?.totalMarks}
+                  </h1>
 
                   <p>
-                    Marks: {questions[currentQuestion].marks}
+                    Percentage: {
+                      Number(submissionResult?.totalMarks) > 0
+                        ? (
+                            Number(submissionResult.marksObtained) /
+                            Number(submissionResult.totalMarks) * 100
+                          ).toFixed(2)
+                        : "0.00"
+                    }%
                   </p>
 
-                  <div className="exam-options">
-                    {optionLabels.map((option) => {
-                      const optionKey =
-                        `option_${option.toLowerCase()}`;
-
-                      return (
-                        <label
-                          key={option}
-                          className="exam-option"
-                        >
-                          <input
-                            type="radio"
-                            name={`question-${questions[currentQuestion].question_id}`}
-                            value={option}
-                            checked={
-                              answers[
-                                questions[currentQuestion].question_id
-                              ] === option
-                            }
-                            onChange={() => selectAnswer(option)}
-                          />
-
-                          <strong>{option}.</strong>
-
-                          {questions[currentQuestion][optionKey]}
-                        </label>
-                      );
-                    })}
-                  </div>
-
-                  {submissionError && (
-                    <p style={{ color: "red", marginTop: "15px" }}>
-                      {submissionError}
-                    </p>
-                  )}
-
-                  <div className="exam-navigation">
-                    <button
-                      className="view-button"
-                      disabled={currentQuestion === 0 || submitting}
-                      onClick={() =>
-                        setCurrentQuestion(currentQuestion - 1)
-                      }
-                    >
-                      Previous
-                    </button>
-
-                    {currentQuestion < questions.length - 1 ? (
-                      <button
-                        className="start-button"
-                        disabled={submitting}
-                        onClick={() =>
-                          setCurrentQuestion(currentQuestion + 1)
-                        }
-                      >
-                        Next Question <ArrowRight size={16} />
-                      </button>
-                    ) : (
-                      <button
-                        className="start-button"
-                        disabled={
-                          submitting ||
-                          Object.keys(answers).length !== questions.length
-                        }
-                        onClick={finishExam}
-                      >
-                        {submitting ? "Submitting..." : "Submit Exam"}
-                      </button>
-                    )}
-                  </div>
+                  <p>
+                    Attempt ID: {submissionResult?.attemptId}
+                  </p>
                 </div>
-              )}
+
+                <button
+                  className="start-button"
+                  onClick={backToDashboard}
+                >
+                  Back to Dashboard
+                </button>
+              </div>
+            )}
           </section>
         ) : (
           <>
